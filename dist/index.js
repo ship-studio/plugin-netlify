@@ -509,9 +509,11 @@ function parseSitesList(data) {
   }
 }
 async function detectOutputDir(shell) {
+  let hasPackageJson = false;
   try {
     const result = await shell.exec("cat", ["package.json"]);
     if (result.exit_code === 0) {
+      hasPackageJson = true;
       const pkg = result.stdout.toLowerCase();
       if (pkg.includes('"next"') || pkg.includes("'next'")) {
         return await detectNextOutputDir(shell);
@@ -531,6 +533,7 @@ async function detectOutputDir(shell) {
     } catch {
     }
   }
+  if (!hasPackageJson) return ".";
   return "dist";
 }
 async function detectNextOutputDir(shell) {
@@ -553,6 +556,16 @@ async function detectNextOutputDir(shell) {
     }
   }
   return ".next";
+}
+async function hasBuildScript(shell) {
+  try {
+    const result = await shell.exec("cat", ["package.json"]);
+    if (result.exit_code !== 0) return false;
+    const pkg = JSON.parse(result.stdout);
+    return !!(pkg.scripts && pkg.scripts.build);
+  } catch {
+    return false;
+  }
 }
 function shellEscape(arg) {
   if (/^[a-zA-Z0-9._\-\/]+$/.test(arg)) return arg;
@@ -764,6 +777,7 @@ function ConnectModal({
         await shell.exec("sh", ["-c", `mkdir -p .netlify && echo '${JSON.stringify({ siteId })}' > .netlify/state.json`]);
       }
       const account = getSelectedAccount();
+      const deployDir = outputDir.trim() || ".";
       const linked = {
         siteId,
         siteName: actualName,
@@ -772,28 +786,33 @@ function ConnectModal({
         siteUrl,
         adminUrl,
         linkedAccount: selectedAccountSlug,
-        outputDir
+        outputDir: deployDir
       };
       await storage.write(linked);
       try {
-        showToast("Building project...", "success");
-        const buildResult = await shell.exec("npm", ["run", "build"], { timeout: 3e5 });
-        if (buildResult.exit_code !== 0) {
-          setError(`Build failed: ${buildResult.stderr || buildResult.stdout}`);
-          setLoading(false);
-          return;
-        }
-        const dirCheck = await shell.exec("test", ["-d", outputDir]);
-        if (dirCheck.exit_code !== 0) {
-          setError(`Build succeeded but "${outputDir}" folder was not created. Check your framework's output settings.`);
-          setLoading(false);
-          return;
+        const canBuild = await hasBuildScript(shell);
+        if (canBuild) {
+          showToast("Building project...", "success");
+          const buildResult = await shell.exec("npm", ["run", "build"], { timeout: 3e5 });
+          if (buildResult.exit_code !== 0) {
+            setError(`Build failed: ${buildResult.stderr || buildResult.stdout}`);
+            setLoading(false);
+            return;
+          }
+          if (deployDir !== ".") {
+            const dirCheck = await shell.exec("test", ["-d", deployDir]);
+            if (dirCheck.exit_code !== 0) {
+              setError(`Build succeeded but "${deployDir}" folder was not created. Check your framework's output settings.`);
+              setLoading(false);
+              return;
+            }
+          }
         }
         showToast("Deploying to Netlify...", "success");
         const deployResult = await execNetlify(shell, [
           "deploy",
           "--dir",
-          outputDir,
+          deployDir,
           "--prod",
           "--json"
         ], { timeout: 3e5 });
@@ -1361,24 +1380,30 @@ function NetlifyToolbar() {
     setIsDeploying(true);
     setShowDropdown(false);
     try {
-      showToast("Building project...", "success");
-      const buildResult = await shell.exec("npm", ["run", "build"], { timeout: 3e5 });
-      if (buildResult.exit_code !== 0) {
-        showToast(`Build failed: ${buildResult.stderr || buildResult.stdout}`, "error");
-        setIsDeploying(false);
-        return;
-      }
-      const dirCheck = await shell.exec("test", ["-d", linked.outputDir]);
-      if (dirCheck.exit_code !== 0) {
-        showToast(`Build succeeded but "${linked.outputDir}" folder not found. Check your framework's output settings.`, "error");
-        setIsDeploying(false);
-        return;
+      const deployDir = linked.outputDir || ".";
+      const canBuild = await hasBuildScript(shell);
+      if (canBuild) {
+        showToast("Building project...", "success");
+        const buildResult = await shell.exec("npm", ["run", "build"], { timeout: 3e5 });
+        if (buildResult.exit_code !== 0) {
+          showToast(`Build failed: ${buildResult.stderr || buildResult.stdout}`, "error");
+          setIsDeploying(false);
+          return;
+        }
+        if (deployDir !== ".") {
+          const dirCheck = await shell.exec("test", ["-d", deployDir]);
+          if (dirCheck.exit_code !== 0) {
+            showToast(`Build succeeded but "${deployDir}" folder not found. Check your framework's output settings.`, "error");
+            setIsDeploying(false);
+            return;
+          }
+        }
       }
       showToast("Deploying to Netlify...", "success");
       const result = await execNetlify(shell, [
         "deploy",
         "--dir",
-        linked.outputDir,
+        deployDir,
         "--prod",
         "--json"
       ], { timeout: 3e5 });

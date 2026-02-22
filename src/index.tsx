@@ -627,9 +627,11 @@ async function detectOutputDir(
   shell: PluginContextValue['shell']
 ): Promise<string> {
   // Check package.json for framework hints first — most reliable
+  let hasPackageJson = false;
   try {
     const result = await shell.exec('cat', ['package.json']);
     if (result.exit_code === 0) {
+      hasPackageJson = true;
       const pkg = result.stdout.toLowerCase();
 
       // Next.js — output depends on config: 'out' if static export, '.next' otherwise
@@ -655,6 +657,9 @@ async function detectOutputDir(
       // ignore
     }
   }
+
+  // No package.json and no known output dirs — likely a plain HTML site
+  if (!hasPackageJson) return '.';
 
   return 'dist';
 }
@@ -694,6 +699,20 @@ async function detectNextOutputDir(
 
   // No config file found — default Next.js SSR output
   return '.next';
+}
+
+/** Check if the project has a `build` script in package.json. */
+async function hasBuildScript(
+  shell: PluginContextValue['shell'],
+): Promise<boolean> {
+  try {
+    const result = await shell.exec('cat', ['package.json']);
+    if (result.exit_code !== 0) return false;
+    const pkg = JSON.parse(result.stdout);
+    return !!(pkg.scripts && pkg.scripts.build);
+  } catch {
+    return false;
+  }
 }
 
 function shellEscape(arg: string): string {
@@ -1003,6 +1022,7 @@ function ConnectModal({
       }
 
       const account = getSelectedAccount();
+      const deployDir = outputDir.trim() || '.';
       const linked: LinkedSite = {
         siteId,
         siteName: actualName,
@@ -1011,7 +1031,7 @@ function ConnectModal({
         siteUrl,
         adminUrl,
         linkedAccount: selectedAccountSlug,
-        outputDir,
+        outputDir: deployDir,
       };
 
       // Save to plugin storage
@@ -1019,25 +1039,31 @@ function ConnectModal({
 
       // Build then deploy
       try {
-        showToast('Building project...', 'success');
-        const buildResult = await shell.exec('npm', ['run', 'build'], { timeout: 300000 });
-        if (buildResult.exit_code !== 0) {
-          setError(`Build failed: ${buildResult.stderr || buildResult.stdout}`);
-          setLoading(false);
-          return;
-        }
+        // Only run build if the project has a build script
+        const canBuild = await hasBuildScript(shell);
+        if (canBuild) {
+          showToast('Building project...', 'success');
+          const buildResult = await shell.exec('npm', ['run', 'build'], { timeout: 300000 });
+          if (buildResult.exit_code !== 0) {
+            setError(`Build failed: ${buildResult.stderr || buildResult.stdout}`);
+            setLoading(false);
+            return;
+          }
 
-        // Verify output directory exists
-        const dirCheck = await shell.exec('test', ['-d', outputDir]);
-        if (dirCheck.exit_code !== 0) {
-          setError(`Build succeeded but "${outputDir}" folder was not created. Check your framework's output settings.`);
-          setLoading(false);
-          return;
+          // Verify output directory exists (only for non-root deploy dirs)
+          if (deployDir !== '.') {
+            const dirCheck = await shell.exec('test', ['-d', deployDir]);
+            if (dirCheck.exit_code !== 0) {
+              setError(`Build succeeded but "${deployDir}" folder was not created. Check your framework's output settings.`);
+              setLoading(false);
+              return;
+            }
+          }
         }
 
         showToast('Deploying to Netlify...', 'success');
         const deployResult = await execNetlify(shell, [
-          'deploy', '--dir', outputDir, '--prod', '--json',
+          'deploy', '--dir', deployDir, '--prod', '--json',
         ], { timeout: 300000 });
 
         if (deployResult.exit_code === 0) {
@@ -1635,25 +1661,33 @@ function NetlifyToolbar() {
     setShowDropdown(false);
 
     try {
-      showToast('Building project...', 'success');
-      const buildResult = await shell.exec('npm', ['run', 'build'], { timeout: 300000 });
-      if (buildResult.exit_code !== 0) {
-        showToast(`Build failed: ${buildResult.stderr || buildResult.stdout}`, 'error');
-        setIsDeploying(false);
-        return;
-      }
+      const deployDir = linked.outputDir || '.';
 
-      // Verify output directory exists
-      const dirCheck = await shell.exec('test', ['-d', linked.outputDir]);
-      if (dirCheck.exit_code !== 0) {
-        showToast(`Build succeeded but "${linked.outputDir}" folder not found. Check your framework's output settings.`, 'error');
-        setIsDeploying(false);
-        return;
+      // Only run build if the project has a build script
+      const canBuild = await hasBuildScript(shell);
+      if (canBuild) {
+        showToast('Building project...', 'success');
+        const buildResult = await shell.exec('npm', ['run', 'build'], { timeout: 300000 });
+        if (buildResult.exit_code !== 0) {
+          showToast(`Build failed: ${buildResult.stderr || buildResult.stdout}`, 'error');
+          setIsDeploying(false);
+          return;
+        }
+
+        // Verify output directory exists (only for non-root deploy dirs)
+        if (deployDir !== '.') {
+          const dirCheck = await shell.exec('test', ['-d', deployDir]);
+          if (dirCheck.exit_code !== 0) {
+            showToast(`Build succeeded but "${deployDir}" folder not found. Check your framework's output settings.`, 'error');
+            setIsDeploying(false);
+            return;
+          }
+        }
       }
 
       showToast('Deploying to Netlify...', 'success');
       const result = await execNetlify(shell, [
-        'deploy', '--dir', linked.outputDir, '--prod', '--json',
+        'deploy', '--dir', deployDir, '--prod', '--json',
       ], { timeout: 300000 });
 
       if (result.exit_code === 0) {
