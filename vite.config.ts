@@ -1,6 +1,41 @@
-import { defineConfig } from 'vite';
+import { defineConfig, Plugin } from 'vite';
+
+/**
+ * Replaces React/JSX external imports with inline references to
+ * window.__SHIPSTUDIO_REACT__. This avoids data: URL imports which
+ * fail when Ship Studio loads plugins via Blob URLs (CSP restriction).
+ */
+function shipStudioReactPlugin(): Plugin {
+  return {
+    name: 'ship-studio-react',
+    generateBundle(_opts, bundle) {
+      for (const file of Object.values(bundle)) {
+        if (file.type !== 'chunk') continue;
+
+        // Strip all data: URL import lines (handles both quote styles)
+        let code = file.code.replace(
+          /import\s*\{[^}]*\}\s*from\s*['"]data:text\/javascript[^'"]*['"];\n?/g,
+          '',
+        );
+
+        // Prepend inline React bindings with the same names the compiled code uses
+        const header = [
+          'const __R = window.__SHIPSTUDIO_REACT__;',
+          'const { useState, useEffect, useRef, useCallback, useMemo } = __R;',
+          'const Fragment = __R.Fragment;',
+          'function jsx(t, p) { const { children: c, ...r } = p; return c !== undefined ? __R.createElement(t, r, c) : __R.createElement(t, r); }',
+          'function jsxs(t, p) { const { children: c, ...r } = p; return __R.createElement(t, r, ...c); }',
+          '',
+        ].join('\n');
+
+        file.code = header + code;
+      }
+    },
+  };
+}
 
 export default defineConfig({
+  plugins: [shipStudioReactPlugin()],
   build: {
     lib: {
       entry: 'src/index.tsx',
@@ -12,17 +47,12 @@ export default defineConfig({
     rollupOptions: {
       external: ['react', 'react-dom', 'react/jsx-runtime'],
       output: {
-        globals: {
-          react: '__SHIPSTUDIO_REACT__',
-          'react-dom': '__SHIPSTUDIO_REACT_DOM__',
-          'react/jsx-runtime': '__SHIPSTUDIO_REACT__',
-        },
-        // Map externals to window globals for Blob URL loading
+        // Placeholder paths so Rollup treats these as external — the plugin
+        // strips the resulting import lines and inlines window globals instead.
         paths: {
-          react: 'data:text/javascript,export default window.__SHIPSTUDIO_REACT__;export const useState=window.__SHIPSTUDIO_REACT__.useState;export const useEffect=window.__SHIPSTUDIO_REACT__.useEffect;export const useRef=window.__SHIPSTUDIO_REACT__.useRef;export const useCallback=window.__SHIPSTUDIO_REACT__.useCallback;export const useMemo=window.__SHIPSTUDIO_REACT__.useMemo;export const createElement=window.__SHIPSTUDIO_REACT__.createElement;',
-          'react/jsx-runtime':
-            'data:text/javascript,const R=window.__SHIPSTUDIO_REACT__;export function jsx(t,p){const{children:c,...r}=p;return c!==undefined?R.createElement(t,r,c):R.createElement(t,r)}export function jsxs(t,p){const{children:c,...r}=p;return R.createElement(t,r,...c)}export const Fragment=R.Fragment;',
-          'react-dom': 'data:text/javascript,export default window.__SHIPSTUDIO_REACT_DOM__;',
+          react: 'data:text/javascript,',
+          'react/jsx-runtime': 'data:text/javascript,',
+          'react-dom': 'data:text/javascript,',
         },
       },
     },
