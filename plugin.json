@@ -1,0 +1,8 @@
+{
+  "id": "netlify",
+  "name": "Netlify",
+  "version": "1.0.0",
+  "description": "Deploy to Netlify directly from Ship Studio",
+  "author": "Ship Studio",
+  "slots": ["toolbar"]
+}
