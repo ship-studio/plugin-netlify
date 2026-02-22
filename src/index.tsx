@@ -134,6 +134,11 @@ const NETLIFY_CSS = `
   background: rgba(251, 191, 36, 0.12);
 }
 
+.nf-badge-ci {
+  color: rgba(74, 222, 128, 0.9);
+  background: rgba(74, 222, 128, 0.12);
+}
+
 /* Dropdown action items (smaller, muted) */
 .nf-dropdown-action {
   color: var(--text-muted) !important;
@@ -696,6 +701,44 @@ function shellEscape(arg: string): string {
   return "'" + arg.replace(/'/g, "'\\''") + "'";
 }
 
+/**
+ * Parse `git remote -v` output and return the GitHub `owner/repo` path.
+ * Handles SSH (`git@github.com:owner/repo.git`) and HTTPS (`https://github.com/owner/repo.git`).
+ * Returns `null` for non-GitHub remotes.
+ */
+function parseGitHubRepo(remoteOutput: string): string | null {
+  // Match origin line (fetch or push)
+  const lines = remoteOutput.split('\n');
+  for (const line of lines) {
+    if (!line.startsWith('origin')) continue;
+    // SSH: git@github.com:owner/repo.git
+    const sshMatch = line.match(/github\.com[:/]([^/]+\/[^/\s]+?)(?:\.git)?(?:\s|$)/);
+    if (sshMatch) return sshMatch[1];
+    // HTTPS: https://github.com/owner/repo.git
+    const httpsMatch = line.match(/github\.com\/([^/]+\/[^/\s]+?)(?:\.git)?(?:\s|$)/);
+    if (httpsMatch) return httpsMatch[1];
+  }
+  return null;
+}
+
+/**
+ * Check whether the Netlify site has CI/CD (GitHub App) properly linked.
+ * Returns `true` if linked, `false` if not, `null` on error (unknown).
+ */
+async function checkAutoDeployStatus(
+  shell: PluginContextValue['shell'],
+  siteId: string,
+): Promise<boolean | null> {
+  try {
+    const result = await netlifyApi(shell, 'GET', `/sites/${siteId}`, undefined, { timeout: 15000 });
+    if (!result.ok) return null;
+    const installationId = result.data?.build_settings?.installation_id;
+    return !!installationId;
+  } catch {
+    return null;
+  }
+}
+
 /** Run `npx --yes netlify-cli <args>` with bumped file-descriptor limit. */
 async function execNetlify(
   shell: PluginContextValue['shell'],
@@ -827,7 +870,6 @@ function ConnectModal({
   shell,
   storage,
   showToast,
-  actions,
   theme,
   onLinked,
 }: {
@@ -836,7 +878,6 @@ function ConnectModal({
   shell: PluginContextValue['shell'];
   storage: PluginContextValue['storage'];
   showToast: PluginContextValue['actions']['showToast'];
-  actions: PluginContextValue['actions'];
   theme: PluginContextValue['theme'];
   onLinked: (site: LinkedSite) => void;
 }) {
@@ -1282,6 +1323,8 @@ function ConnectedDropdown({
   onSignOut,
   onDeploy,
   isDeploying,
+  autoDeployLinked,
+  onSetupAutoDeploy,
 }: {
   linked: LinkedSite;
   currentBranch: string | null;
@@ -1290,6 +1333,8 @@ function ConnectedDropdown({
   onSignOut: () => void;
   onDeploy: () => void;
   isDeploying: boolean;
+  autoDeployLinked: boolean | null;
+  onSetupAutoDeploy: () => void;
 }) {
   const prodUrl = linked.siteUrl || `https://${linked.siteName}.netlify.app`;
   const prodLabel = prodUrl.replace('https://', '');
@@ -1331,6 +1376,26 @@ function ConnectedDropdown({
           <span className="nf-site-url">app.netlify.com</span>
           <ExternalLinkIcon />
         </button>
+
+        {/* Auto-deploy status */}
+        {autoDeployLinked === true && (
+          <button
+            onClick={(e) => { e.stopPropagation(); actions.openUrl(`${dashboardUrl}/configuration/deploys`); }}
+          >
+            <span className="nf-badge nf-badge-ci">CI/CD</span>
+            <span className="nf-site-url">Auto-deploy from {currentBranch || 'main'}</span>
+            <ExternalLinkIcon />
+          </button>
+        )}
+        {autoDeployLinked === false && (
+          <button
+            className="nf-dropdown-action"
+            onClick={(e) => { e.stopPropagation(); onSetupAutoDeploy(); }}
+          >
+            <DeployIcon />
+            Set up auto-deploy
+          </button>
+        )}
 
         <div className="nf-dropdown-divider" />
 
@@ -1398,6 +1463,7 @@ function NetlifyToolbar() {
   const [showDropdown, setShowDropdown] = useState(false);
   const [installing, setInstalling] = useState(false);
   const [hasGitRemote, setHasGitRemote] = useState(false);
+  const [autoDeployLinked, setAutoDeployLinked] = useState<boolean | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const hoverTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -1453,6 +1519,9 @@ function NetlifyToolbar() {
           const data = await st.read();
           if (data.siteId && data.siteName) {
             setLinked(data as unknown as LinkedSite);
+            // Check auto-deploy status for the linked site
+            const status = await checkAutoDeployStatus(sh, data.siteId as string);
+            if (!cancelled) setAutoDeployLinked(status);
           }
         } catch {
           // Storage empty or corrupt — not linked
@@ -1638,6 +1707,8 @@ function NetlifyToolbar() {
 
   const handleLinked = useCallback((site: LinkedSite) => {
     setLinked(site);
+    setAutoDeployLinked(null); // reset while checking
+    checkAutoDeployStatus(shellRef.current, site.siteId).then(setAutoDeployLinked);
   }, []);
 
   const handleMouseEnter = useCallback(() => {
@@ -1756,7 +1827,6 @@ function NetlifyToolbar() {
               shell={shell}
               storage={storage}
               showToast={showToast}
-              actions={actions}
               theme={theme}
               onLinked={handleLinked}
             />
@@ -1800,6 +1870,8 @@ function NetlifyToolbar() {
               onSignOut={handleSignOut}
               onDeploy={handleDeploy}
               isDeploying={isDeploying}
+              autoDeployLinked={autoDeployLinked}
+              onSetupAutoDeploy={() => actions.openUrl(`https://app.netlify.com/sites/${linked!.siteName}/configuration/deploys`)}
             />
           )}
         </div>

@@ -124,6 +124,11 @@ const NETLIFY_CSS = `
   background: rgba(251, 191, 36, 0.12);
 }
 
+.nf-badge-ci {
+  color: rgba(74, 222, 128, 0.9);
+  background: rgba(74, 222, 128, 0.12);
+}
+
 /* Dropdown action items (smaller, muted) */
 .nf-dropdown-action {
   color: var(--text-muted) !important;
@@ -553,6 +558,17 @@ function shellEscape(arg) {
   if (/^[a-zA-Z0-9._\-\/]+$/.test(arg)) return arg;
   return "'" + arg.replace(/'/g, "'\\''") + "'";
 }
+async function checkAutoDeployStatus(shell, siteId) {
+  var _a, _b;
+  try {
+    const result = await netlifyApi(shell, "GET", `/sites/${siteId}`, void 0, { timeout: 15e3 });
+    if (!result.ok) return null;
+    const installationId = (_b = (_a = result.data) == null ? void 0 : _a.build_settings) == null ? void 0 : _b.installation_id;
+    return !!installationId;
+  } catch {
+    return null;
+  }
+}
 async function execNetlify(shell, args, options) {
   const escaped = args.map(shellEscape).join(" ");
   return shell.exec("sh", ["-c", `ulimit -n 8192 2>/dev/null; npx --yes netlify-cli ${escaped}`], options);
@@ -643,7 +659,6 @@ function ConnectModal({
   shell,
   storage,
   showToast,
-  actions,
   theme,
   onLinked
 }) {
@@ -1044,7 +1059,9 @@ function ConnectedDropdown({
   onUnlink,
   onSignOut,
   onDeploy,
-  isDeploying
+  isDeploying,
+  autoDeployLinked,
+  onSetupAutoDeploy
 }) {
   const prodUrl = linked.siteUrl || `https://${linked.siteName}.netlify.app`;
   const prodLabel = prodUrl.replace("https://", "");
@@ -1095,6 +1112,37 @@ function ConnectedDropdown({
           /* @__PURE__ */ jsx("span", { className: "nf-badge nf-badge-dashboard", children: "Dash" }),
           /* @__PURE__ */ jsx("span", { className: "nf-site-url", children: "app.netlify.com" }),
           /* @__PURE__ */ jsx(ExternalLinkIcon, {})
+        ]
+      }
+    ),
+    autoDeployLinked === true && /* @__PURE__ */ jsxs(
+      "button",
+      {
+        onClick: (e) => {
+          e.stopPropagation();
+          actions.openUrl(`${dashboardUrl}/configuration/deploys`);
+        },
+        children: [
+          /* @__PURE__ */ jsx("span", { className: "nf-badge nf-badge-ci", children: "CI/CD" }),
+          /* @__PURE__ */ jsxs("span", { className: "nf-site-url", children: [
+            "Auto-deploy from ",
+            currentBranch || "main"
+          ] }),
+          /* @__PURE__ */ jsx(ExternalLinkIcon, {})
+        ]
+      }
+    ),
+    autoDeployLinked === false && /* @__PURE__ */ jsxs(
+      "button",
+      {
+        className: "nf-dropdown-action",
+        onClick: (e) => {
+          e.stopPropagation();
+          onSetupAutoDeploy();
+        },
+        children: [
+          /* @__PURE__ */ jsx(DeployIcon, {}),
+          "Set up auto-deploy"
         ]
       }
     ),
@@ -1166,6 +1214,7 @@ function NetlifyToolbar() {
   const [showDropdown, setShowDropdown] = useState(false);
   const [installing, setInstalling] = useState(false);
   const [hasGitRemote, setHasGitRemote] = useState(false);
+  const [autoDeployLinked, setAutoDeployLinked] = useState(null);
   const dropdownRef = useRef(null);
   const hoverTimeoutRef = useRef(null);
   const state = (() => {
@@ -1212,6 +1261,8 @@ function NetlifyToolbar() {
           const data = await st.read();
           if (data.siteId && data.siteName) {
             setLinked(data);
+            const status = await checkAutoDeployStatus(sh, data.siteId);
+            if (!cancelled) setAutoDeployLinked(status);
           }
         } catch {
         }
@@ -1377,6 +1428,8 @@ function NetlifyToolbar() {
   }, [shell, storage, showToast]);
   const handleLinked = useCallback((site) => {
     setLinked(site);
+    setAutoDeployLinked(null);
+    checkAutoDeployStatus(shellRef.current, site.siteId).then(setAutoDeployLinked);
   }, []);
   const handleMouseEnter = useCallback(() => {
     if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
@@ -1510,7 +1563,6 @@ function NetlifyToolbar() {
             shell,
             storage,
             showToast,
-            actions,
             theme,
             onLinked: handleLinked
           }
@@ -1556,7 +1608,9 @@ function NetlifyToolbar() {
                 onUnlink: handleUnlink,
                 onSignOut: handleSignOut,
                 onDeploy: handleDeploy,
-                isDeploying
+                isDeploying,
+                autoDeployLinked,
+                onSetupAutoDeploy: () => actions.openUrl(`https://app.netlify.com/sites/${linked.siteName}/configuration/deploys`)
               }
             )
           ]
