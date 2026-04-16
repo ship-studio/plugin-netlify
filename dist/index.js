@@ -1468,7 +1468,9 @@ function NetlifyToolbar() {
     }, 200);
   }, []);
   const currentBranch = ((_a = ctx.project) == null ? void 0 : _a.currentBranch) ?? null;
-  if (!hasGitRemote && state !== "CONNECTED") return null;
+  if (!hasGitRemote && state !== "CONNECTED") {
+    return /* @__PURE__ */ jsx("button", { className: "toolbar-icon-btn", disabled: true, title: "Push to GitHub to enable Netlify", children: /* @__PURE__ */ jsx(NetlifyIcon, {}) });
+  }
   switch (state) {
     case "CHECKING":
       return /* @__PURE__ */ jsxs(

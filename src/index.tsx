@@ -1762,8 +1762,14 @@ function NetlifyToolbar() {
 
   const currentBranch = ctx.project?.currentBranch ?? null;
 
-  // Hide until a git remote is configured (unless already connected)
-  if (!hasGitRemote && state !== 'CONNECTED') return null;
+  // Show disabled button until a git remote is configured (unless already connected)
+  if (!hasGitRemote && state !== 'CONNECTED') {
+    return (
+      <button className="toolbar-icon-btn" disabled title="Push to GitHub to enable Netlify">
+        <NetlifyIcon />
+      </button>
+    );
+  }
 
   // Render based on state
   switch (state) {
